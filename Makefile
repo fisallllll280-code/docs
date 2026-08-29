@@ -1,4 +1,4 @@
-.PHONY: all dev build export format lint test install clean lint_md lint_md_fix lint_prose broken-links broken-links-with-anchors format-check code-snippets test-code-samples check-cross-refs
+.PHONY: all dev build export format lint test install install_vale clean lint_md lint_md_fix lint_prose broken-links broken-links-with-anchors format-check code-snippets test-code-samples check-cross-refs
 
 # Default target
 all: help
@@ -59,13 +59,21 @@ lint_md_fix:
 		exit 1; \
 	fi
 
+VALE_BIN ?= .bin/vale
+# Single source of truth for the Vale pin is .mise.toml. Override on the
+# command line only for a one-off test: make lint_prose VALE_VERSION=3.16.0
+VALE_VERSION ?= $(shell sed -n 's/^[[:space:]]*vale[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' .mise.toml | head -n 1)
+
+install_vale:
+	@bash scripts/install-vale.sh "$(VALE_BIN)" "$(VALE_VERSION)"
+
 lint_prose:
 	@echo "Linting prose with Vale..."
-	@command -v vale >/dev/null 2>&1 || { echo "Installing Vale for prose linting..."; brew install vale; }
+	@bash scripts/install-vale.sh "$(VALE_BIN)" "$(VALE_VERSION)"
 	@if [ -n "$(FILES)" ]; then \
-		vale --glob='!**/node_modules/**' $(FILES); \
+		"$(VALE_BIN)" --glob='!{**/node_modules/**,src/code-samples/**}' $(FILES); \
 	else \
-		vale --glob='!**/node_modules/**' src/; \
+		"$(VALE_BIN)" --glob='!{**/node_modules/**,src/code-samples/**}' src/; \
 	fi
 
 test:
@@ -89,10 +97,11 @@ clean:
 
 # Mintlify commands (run from build directory where final docs are generated)
 # broken-links: Checks for broken links, excluding OpenAPI-generated pages and snippet files
-# (snippets use relative paths that resolve when inlined; /oss/langchain/agents uses redirect)
 # Excluded: /langsmith/agent-server-api/, /api-reference/ (Mintlify-generated at deploy, not in local build)
-# Excluded: ../langchain/agents, ../langgraph/local-server (snippet preprocessing: /oss/... → relative path, resolves when inlined)
-# python3 normalizes U+00A0 (NBSP) to space so grep works on both macOS and Linux ([[:space:]] treats NBSP differently by locale)
+# Excluded: entire snippets/ report sections (scripts/filter_mint_broken_links.py)
+#   Snippet /oss/ links are absolute language-prefixed paths under
+#   build/snippets/{python|javascript}/...; mint checks snippets as standalone files
+#   so those look broken until inlined into a page.
 # Failure: only when filtered output still has indented link lines (real broken links we care about)
 # Run mint, capture output, filter exclusions. Only show output when failing.
 broken-links: build
@@ -104,7 +113,7 @@ broken-links: build
 			if [ -n "$$VERSION" ]; then sed -i.bak "s/__VERSION__/\"$$VERSION\"/g" "$$KATEX_MJS" 2>/dev/null || true; fi; \
 		fi
 	@cd build && mint broken-links 2>&1 | tee /tmp/broken-links.txt > /dev/null; \
-		filtered=$$(grep -v '/langsmith/agent-server-api/' /tmp/broken-links.txt | grep -v '/langsmith/smith-api' | grep -v '/api-reference/' | grep -v '\.\./langchain/agents' | grep -v '\.\./langgraph/local-server' | python3 -c "import sys; sys.stdout.write(sys.stdin.read().replace('\u00a0', ' '))"); \
+		filtered=$$(python3 ../scripts/filter_mint_broken_links.py --input /tmp/broken-links.txt); \
 		if echo "$$filtered" | grep -qE '^[[:space:]]+[^[:space:]]'; then \
 			echo "$$filtered"; echo ""; echo "❌ Broken links found"; exit 1; \
 		else \
@@ -120,7 +129,7 @@ broken-links-with-anchors: build
 			if [ -n "$$VERSION" ]; then sed -i.bak "s/__VERSION__/\"$$VERSION\"/g" "$$KATEX_MJS" 2>/dev/null || true; fi; \
 		fi
 	@cd build && mint broken-links --check-anchors 2>&1 | tee /tmp/broken-links.txt > /dev/null; \
-		filtered=$$(grep -v '/langsmith/agent-server-api/' /tmp/broken-links.txt | grep -v '/langsmith/smith-api' | grep -v '/api-reference/' | grep -v '\.\./langchain/agents' | grep -v '\.\./langgraph/local-server' | python3 -c "import sys; sys.stdout.write(sys.stdin.read().replace('\u00a0', ' '))"); \
+		filtered=$$(python3 ../scripts/filter_mint_broken_links.py --check-anchors --input /tmp/broken-links.txt); \
 		if echo "$$filtered" | grep -qE '^[[:space:]]+[^[:space:]]'; then \
 			echo "$$filtered"; echo ""; echo "❌ Broken links found"; exit 1; \
 		else \
